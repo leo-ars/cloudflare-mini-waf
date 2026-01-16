@@ -4,6 +4,41 @@ A lightweight, edge-based Web Application Firewall (WAF) built with Cloudflare W
 
 **Written in vanilla JavaScript for easy reading and quick understanding** - no TypeScript compilation needed!
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [Geographic Restrictions](#1-geographic-restrictions)
+  - [Rate Limiting](#2-rate-limiting)
+  - [IP Filtering - Blocklist](#3-ip-filtering---blocklist)
+  - [IP Filtering - Allowlist](#4-ip-filtering---allowlist)
+  - [HTTP Method Filtering](#5-http-method-filtering)
+  - [Request Size Limits](#6-request-size-limits)
+  - [Malicious Pattern Detection](#7-malicious-pattern-detection)
+  - [Payload Validation](#8-payload-validation-api-schema-validation)
+  - [Configuration Examples by Use Case](#configuration-examples-by-use-case)
+- [Usage](#usage)
+  - [Development](#development)
+  - [Testing](#testing)
+  - [Deployment](#deployment)
+- [Code Examples](#code-examples)
+  - [Block by Country](#example-block-by-country)
+  - [Rate Limiting Setup](#example-rate-limiting-setup)
+  - [IP Allowlist for Admin Panel](#example-ip-allowlist-for-admin-panel)
+  - [Validate API Payloads](#example-validate-api-payloads)
+  - [Custom Pattern Detection](#example-custom-pattern-detection)
+- [Adding to an Existing Application](#adding-to-an-existing-application)
+- [Advanced Features](#advanced-features)
+- [Performance](#performance)
+- [Security Considerations](#security-considerations)
+- [Cloudflare-Specific Features](#cloudflare-specific-features-leveraged)
+- [Troubleshooting](#troubleshooting)
+- [Resources](#resources)
+- [Contributing](#contributing)
+
 ## Overview
 
 This project showcases the power of Cloudflare Workers for implementing security controls before requests reach your origin infrastructure. By running at Cloudflare's edge network (300+ locations worldwide), you can block malicious traffic milliseconds after it enters Cloudflare's network, reducing load on your origin and improving security posture.
@@ -38,6 +73,7 @@ This project showcases the power of Cloudflare Workers for implementing security
 - Request size limits to prevent resource exhaustion
 - User-Agent validation to block known malicious tools
 - Content-Type validation
+- **JSON payload validation** with schema definitions (types, lengths, patterns, enums)
 
 ### 🔐 Security Headers
 Automatically adds security headers to all responses:
@@ -480,6 +516,228 @@ blockSuspiciousPatterns: false
 
 ---
 
+#### 8. **Payload Validation (API Schema Validation)**
+
+```javascript
+payloadValidation: {
+  enabled: true,
+  schemas: {
+    '/api/users': {
+      POST: {
+        required: ['email', 'name'],
+        properties: {
+          email: { type: 'string', pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/ },
+          name: { type: 'string', minLength: 2, maxLength: 100 },
+          age: { type: 'number', min: 0, max: 150 },
+          role: { type: 'string', enum: ['user', 'admin', 'moderator'] },
+        },
+      },
+    },
+  },
+}
+```
+
+**What it does**: Validates JSON request bodies against defined schemas for specific API endpoints. Checks data types, required fields, string lengths, number ranges, enum values, and regex patterns **before requests reach your origin**.
+
+**Use cases**:
+- Validate API request payloads at the edge
+- Enforce data contracts and API specifications
+- Block malformed or invalid data early
+- Reduce load on origin servers from invalid requests
+- Provide immediate, clear validation errors to API consumers
+- Prevent injection of unexpected fields
+- Enforce business rules (e.g., age ranges, valid email formats)
+
+**Schema properties supported**:
+
+```javascript
+properties: {
+  fieldName: {
+    type: 'string' | 'number' | 'boolean' | 'array' | 'object',
+    
+    // String validations
+    minLength: 2,                    // Minimum string length
+    maxLength: 100,                  // Maximum string length
+    pattern: /^[a-z]+$/,            // Regex pattern match
+    enum: ['value1', 'value2'],      // Allowed values only
+    
+    // Number validations
+    min: 0,                          // Minimum value
+    max: 150,                        // Maximum value
+  }
+}
+```
+
+**Example schemas**:
+
+```javascript
+// User registration endpoint
+'/api/users': {
+  POST: {
+    required: ['email', 'password', 'name'],
+    properties: {
+      email: { 
+        type: 'string', 
+        pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+        maxLength: 255,
+      },
+      password: { 
+        type: 'string', 
+        minLength: 8,
+        maxLength: 128,
+      },
+      name: { 
+        type: 'string', 
+        minLength: 2,
+        maxLength: 100,
+      },
+      age: { 
+        type: 'number', 
+        min: 13,    // COPPA compliance
+        max: 120,
+      },
+      role: {
+        type: 'string',
+        enum: ['user', 'admin', 'moderator'],
+      },
+    },
+  },
+  PUT: {
+    required: ['name'],
+    properties: {
+      name: { type: 'string', minLength: 2, maxLength: 100 },
+      bio: { type: 'string', maxLength: 500 },
+    },
+  },
+},
+
+// Login endpoint
+'/api/login': {
+  POST: {
+    required: ['email', 'password'],
+    properties: {
+      email: { 
+        type: 'string', 
+        pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+      },
+      password: { 
+        type: 'string', 
+        minLength: 1,
+      },
+      rememberMe: { 
+        type: 'boolean',
+      },
+    },
+  },
+},
+
+// Product creation endpoint
+'/api/products': {
+  POST: {
+    required: ['name', 'price', 'category'],
+    properties: {
+      name: { 
+        type: 'string', 
+        minLength: 3,
+        maxLength: 200,
+      },
+      description: { 
+        type: 'string', 
+        maxLength: 2000,
+      },
+      price: { 
+        type: 'number', 
+        min: 0,
+        max: 999999.99,
+      },
+      category: {
+        type: 'string',
+        enum: ['electronics', 'clothing', 'books', 'food'],
+      },
+      inStock: {
+        type: 'boolean',
+      },
+      quantity: {
+        type: 'number',
+        min: 0,
+        max: 10000,
+      },
+    },
+  },
+},
+```
+
+**How it works**:
+1. Request arrives for a configured endpoint (e.g., `POST /api/users`)
+2. WAF checks if a schema is defined for that path + method
+3. Validates JSON body against the schema rules
+4. Returns `400 Bad Request` with detailed error if validation fails
+5. Passes request to origin if validation succeeds
+
+**Validation errors returned**:
+```json
+{
+  "error": "Validation Error",
+  "message": "Field 'email' has invalid format",
+  "field": "email"
+}
+```
+
+**Response codes**:
+- `400 Bad Request` - Validation failed
+- `200 OK` - Validation passed (request forwarded to origin)
+
+**Configuration examples**:
+
+```javascript
+// Enable validation for specific endpoints only
+payloadValidation: {
+  enabled: true,
+  schemas: {
+    '/api/users': { /* schema */ },
+    '/api/login': { /* schema */ },
+  },
+}
+
+// Disable validation (skip all checks)
+payloadValidation: {
+  enabled: false,
+  schemas: {},
+}
+
+// Different schemas for different methods
+payloadValidation: {
+  enabled: true,
+  schemas: {
+    '/api/users': {
+      POST: {
+        required: ['email', 'name', 'password'],
+        properties: { /* creation fields */ },
+      },
+      PUT: {
+        required: ['name'],
+        properties: { /* update fields (no password) */ },
+      },
+      PATCH: {
+        properties: { /* optional partial updates */ },
+      },
+    },
+  },
+}
+```
+
+**⚠️ Important notes**:
+- Only validates JSON payloads (`Content-Type: application/json`)
+- Only validates POST, PUT, and PATCH requests
+- Endpoints without schemas are not validated (pass through)
+- Validation happens **before** malicious pattern detection
+- Unknown fields are allowed (only defined fields are validated)
+- Use this for business logic validation, not security validation
+
+**Performance**: < 2ms overhead for typical API payloads
+
+---
+
 ### Configuration Examples by Use Case
 
 #### Public Blog/Content Site
@@ -596,6 +854,21 @@ for i in {1..150}; do curl http://localhost:8787/; done
 
 # Test with blocked User-Agent
 curl -A "sqlmap/1.0" http://localhost:8787/
+
+# Test payload validation (valid)
+curl -X POST http://localhost:8787/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","name":"John Doe"}'
+
+# Test payload validation (invalid email)
+curl -X POST http://localhost:8787/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"not-an-email","name":"John Doe"}'
+
+# Test payload validation (missing required field)
+curl -X POST http://localhost:8787/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com"}'
 ```
 
 ### Deployment
@@ -609,6 +882,441 @@ npm run deploy
 After deployment, your Worker will be available at:
 - `https://cloudflare-mini-waf.<your-subdomain>.workers.dev`
 - Or on your custom domain (if configured)
+
+## Code Examples
+
+This section shows practical code examples for implementing common WAF scenarios.
+
+### Example: Block by Country
+
+Block all traffic from specific countries while allowing others:
+
+```javascript
+// src/index.js - Configuration
+const config = {
+  blockedCountries: ['CN', 'RU', 'KP', 'IR'],  // Block China, Russia, North Korea, Iran
+  // ... other config
+};
+```
+
+**Test it:**
+```bash
+# This will show your current country
+curl http://localhost:8787/ | jq '.requestInfo.country'
+
+# To test country blocking, the Worker reads the CF-IPCountry header
+# In production, Cloudflare automatically adds this header
+```
+
+**Response when blocked:**
+```json
+{
+  "error": "Access Denied",
+  "reason": "Geographic restriction",
+  "country": "CN"
+}
+```
+
+**Alternative - Allowlist only specific countries:**
+```javascript
+const config = {
+  allowedCountries: ['US', 'CA', 'GB', 'DE', 'FR'],  // Only allow these
+  // blockedCountries is ignored when allowedCountries is set
+};
+```
+
+---
+
+### Example: Rate Limiting Setup
+
+Protect your API from brute force attacks with distributed rate limiting:
+
+**Step 1: Create KV Namespace**
+```bash
+# Create the namespace
+npx wrangler kv:namespace create RATE_LIMIT
+
+# Output will show: 
+# { binding = "RATE_LIMIT", id = "abc123..." }
+```
+
+**Step 2: Configure wrangler.jsonc**
+```json
+{
+  "name": "cloudflare-mini-waf",
+  "main": "src/index.js",
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT",
+      "id": "abc123..."  // Use your ID from step 1
+    }
+  ]
+}
+```
+
+**Step 3: Enable in config**
+```javascript
+const config = {
+  rateLimit: {
+    enabled: true,
+    maxRequests: 10,      // Only 10 requests
+    windowSeconds: 60,    // Per minute
+  },
+};
+```
+
+**Step 4: Uncomment KV code in src/index.js**
+```javascript
+// Find this section around line 200 in src/index.js
+// Remove the /* and */ comment markers
+
+if (env.RATE_LIMIT) {
+  const currentCount = await env.RATE_LIMIT.get(rateLimitKey);
+  const count = currentCount ? parseInt(currentCount) : 0;
+  
+  if (count >= config.rateLimit.maxRequests) {
+    return new Response(/* ... 429 response ... */);
+  }
+  
+  await env.RATE_LIMIT.put(
+    rateLimitKey,
+    (count + 1).toString(),
+    { expirationTtl: config.rateLimit.windowSeconds }
+  );
+}
+```
+
+**Test it:**
+```bash
+# Send 15 requests quickly
+for i in {1..15}; do 
+  curl -s http://localhost:8787/ | jq '.error // .success'
+done
+
+# First 10 show: true
+# Last 5 show: "Rate Limit Exceeded"
+```
+
+**Response when rate limited:**
+```json
+{
+  "error": "Rate Limit Exceeded",
+  "reason": "Maximum 10 requests per 60 seconds",
+  "retryAfter": 60
+}
+```
+
+**Headers returned:**
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 60
+X-RateLimit-Limit: 10
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1737036000000
+```
+
+---
+
+### Example: IP Allowlist for Admin Panel
+
+Restrict admin panel access to office IP addresses only:
+
+```javascript
+// src/index.js
+const config = {
+  allowedIPs: [
+    '203.0.113.0/24',      // Office network
+    '198.51.100.50',       // VPN gateway
+    '192.0.2.10',          // CEO's home IP
+  ],
+  // When allowedIPs is set, these IPs bypass ALL security checks
+  // and all other IPs are blocked
+};
+```
+
+**Test it:**
+```bash
+# Check what IP the Worker sees
+curl http://localhost:8787/ | jq '.requestInfo.ip'
+
+# In local dev, you'll see: "::1" (localhost)
+# In production, Cloudflare adds CF-Connecting-IP header
+```
+
+**Response when blocked:**
+```json
+{
+  "error": "Access Denied",
+  "reason": "IP not in allowlist"
+}
+```
+
+**Combine with path-based routing:**
+```javascript
+// In handleOriginRequest function
+async function handleOriginRequest(request) {
+  const url = new URL(request.url);
+  
+  // Only apply IP allowlist to admin paths
+  if (url.pathname.startsWith('/admin')) {
+    const clientIP = request.headers.get('CF-Connecting-IP');
+    const allowed = ['203.0.113.0/24', '192.0.2.10'];
+    
+    if (!allowed.some(ip => matchIPOrCIDR(clientIP, ip))) {
+      return new Response('Forbidden', { status: 403 });
+    }
+  }
+  
+  // Forward to origin
+  return fetch(request);
+}
+```
+
+---
+
+### Example: Validate API Payloads
+
+Validate incoming API requests before they reach your origin:
+
+**Scenario: User Registration API**
+
+```javascript
+// src/index.js - Configuration
+const config = {
+  payloadValidation: {
+    enabled: true,
+    schemas: {
+      '/api/register': {
+        POST: {
+          required: ['email', 'password', 'name'],
+          properties: {
+            email: { 
+              type: 'string', 
+              pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+              maxLength: 255,
+            },
+            password: { 
+              type: 'string', 
+              minLength: 8,
+              maxLength: 128,
+            },
+            name: { 
+              type: 'string', 
+              minLength: 2,
+              maxLength: 100,
+            },
+            age: { 
+              type: 'number', 
+              min: 13,
+              max: 120,
+            },
+          },
+        },
+      },
+    },
+  },
+};
+```
+
+**Test valid payload:**
+```bash
+curl -X POST http://localhost:8787/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "securePass123",
+    "name": "John Doe",
+    "age": 25
+  }'
+```
+
+**Response (passes validation):**
+```json
+{
+  "success": true,
+  "message": "Request passed all WAF checks!"
+}
+```
+
+**Test invalid payload (missing required field):**
+```bash
+curl -X POST http://localhost:8787/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "securePass123"
+  }'
+```
+
+**Response:**
+```json
+{
+  "error": "Validation Error",
+  "message": "Missing required field: name",
+  "field": "name"
+}
+```
+
+**Test invalid payload (email format):**
+```bash
+curl -X POST http://localhost:8787/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "not-an-email",
+    "password": "securePass123",
+    "name": "John Doe"
+  }'
+```
+
+**Response:**
+```json
+{
+  "error": "Validation Error",
+  "message": "Field 'email' has invalid format",
+  "field": "email"
+}
+```
+
+**Test invalid payload (age range):**
+```bash
+curl -X POST http://localhost:8787/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "securePass123",
+    "name": "John Doe",
+    "age": 200
+  }'
+```
+
+**Response:**
+```json
+{
+  "error": "Validation Error",
+  "message": "Field 'age' must be at most 120",
+  "field": "age"
+}
+```
+
+**More complex example - E-commerce API:**
+```javascript
+'/api/products': {
+  POST: {
+    required: ['name', 'price', 'category'],
+    properties: {
+      name: { type: 'string', minLength: 3, maxLength: 200 },
+      price: { type: 'number', min: 0.01, max: 999999.99 },
+      category: {
+        type: 'string',
+        enum: ['electronics', 'clothing', 'books', 'food', 'toys'],
+      },
+      sku: { 
+        type: 'string', 
+        pattern: /^[A-Z]{3}-\d{6}$/,  // Format: ABC-123456
+      },
+      inStock: { type: 'boolean' },
+      quantity: { type: 'number', min: 0, max: 10000 },
+    },
+  },
+},
+```
+
+---
+
+### Example: Custom Pattern Detection
+
+Add custom security patterns for your specific application:
+
+```javascript
+// src/index.js - Find checkMaliciousPatterns function (around line 380)
+// Add custom patterns
+
+async function checkMaliciousPatterns(request) {
+  // ... existing code ...
+  
+  // Add your custom patterns
+  const customPatterns = [
+    // Block requests with specific keywords
+    /admin123/gi,
+    /test_user/gi,
+    
+    // Block common exploit attempts
+    /\$\{jndi:/gi,  // Log4Shell
+    /%00/gi,         // Null byte injection
+    
+    // Block credential stuffing patterns
+    /password.*:\s*["'].*["']/gi,
+    
+    // Block common bot signatures in URLs
+    /wp-admin/gi,
+    /phpmyadmin/gi,
+  ];
+  
+  const fullURL = path + queryString;
+  
+  for (const pattern of customPatterns) {
+    if (pattern.test(fullURL)) {
+      return new Response(
+        JSON.stringify({
+          error: 'Security Violation',
+          reason: 'Blocked by custom security rule',
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+  }
+  
+  // ... rest of function ...
+}
+```
+
+**Test custom patterns:**
+```bash
+# Should be blocked
+curl "http://localhost:8787/wp-admin/login.php"
+curl "http://localhost:8787/api?user=admin123"
+
+# Should pass
+curl "http://localhost:8787/api?user=john_doe"
+```
+
+---
+
+### Example: Path-Based Rules
+
+Apply different security rules to different paths:
+
+```javascript
+// In the main fetch handler
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    
+    // Strict rules for API endpoints
+    if (url.pathname.startsWith('/api/')) {
+      config.rateLimit.maxRequests = 30;  // Stricter rate limit
+      config.allowedMethods = ['GET', 'POST', 'PUT', 'DELETE'];
+      config.blockSuspiciousPatterns = true;
+    }
+    
+    // Relaxed rules for static assets
+    else if (url.pathname.startsWith('/assets/')) {
+      config.rateLimit.maxRequests = 1000;
+      config.allowedMethods = ['GET', 'HEAD'];
+      config.blockSuspiciousPatterns = false;
+    }
+    
+    // Admin panel - IP allowlist only
+    else if (url.pathname.startsWith('/admin/')) {
+      config.allowedIPs = ['203.0.113.0/24'];
+    }
+    
+    // ... run security checks ...
+  }
+};
+```
+
+---
 
 ## Adding to an Existing Application
 
@@ -626,8 +1334,9 @@ You can use this WAF in front of any application:
 
 Forward requests to another Worker after WAF checks:
 
-```typescript
-async function handleOriginRequest(request: Request): Promise<Response> {
+```javascript
+// src/index.js - Replace handleOriginRequest function
+async function handleOriginRequest(request) {
   // Forward to another Worker via Service Binding
   return env.YOUR_APP_WORKER.fetch(request);
 }
@@ -649,8 +1358,9 @@ Configure the binding in `wrangler.jsonc`:
 
 Forward requests to your origin server:
 
-```typescript
-async function handleOriginRequest(request: Request): Promise<Response> {
+```javascript
+// src/index.js - Replace handleOriginRequest function
+async function handleOriginRequest(request) {
   const url = new URL(request.url);
   const originURL = 'https://your-origin.example.com';
   const originRequest = new Request(

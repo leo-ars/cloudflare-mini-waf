@@ -13,6 +13,7 @@
  * - SQL injection detection
  * - XSS (Cross-Site Scripting) detection
  * - Request size validation
+ * - Payload validation (API schema validation)
  * - Custom security headers
  * - IP allowlist/blocklist
  * - User-Agent validation
@@ -50,6 +51,35 @@ const config = {
 	
 	// Enable/disable pattern-based attack detection
 	blockSuspiciousPatterns: true,
+	
+	// Payload validation for API endpoints
+	// Define schemas for specific endpoints
+	payloadValidation: {
+		enabled: true,
+		// Schema definitions for different endpoints
+		schemas: {
+			'/api/users': {
+				POST: {
+					required: ['email', 'name'],
+					properties: {
+						email: { type: 'string', pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/ },
+						name: { type: 'string', minLength: 2, maxLength: 100 },
+						age: { type: 'number', min: 0, max: 150 },
+						role: { type: 'string', enum: ['user', 'admin', 'moderator'] },
+					},
+				},
+			},
+			'/api/login': {
+				POST: {
+					required: ['email', 'password'],
+					properties: {
+						email: { type: 'string', pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/ },
+						password: { type: 'string', minLength: 8 },
+					},
+				},
+			},
+		},
+	},
 };
 
 // ============================================================================
@@ -489,6 +519,261 @@ async function checkMaliciousPatterns(request) {
 }
 
 /**
+ * PAYLOAD VALIDATION (API Schema Validation)
+ * 
+ * Validates JSON payloads against defined schemas for specific endpoints.
+ * Checks data types, required fields, string lengths, number ranges, enums, and patterns.
+ * 
+ * Use cases:
+ * - Validate API request bodies before they reach your origin
+ * - Enforce data contracts at the edge
+ * - Block malformed or invalid data early
+ * - Reduce load on origin servers from invalid requests
+ * - Provide clear validation errors to API consumers
+ * 
+ * Schema definition supports:
+ * - type: 'string', 'number', 'boolean', 'array', 'object'
+ * - required: Array of required field names
+ * - minLength/maxLength: For strings
+ * - min/max: For numbers
+ * - pattern: Regex pattern for strings
+ * - enum: Array of allowed values
+ */
+async function checkPayloadValidation(request) {
+	if (!config.payloadValidation.enabled) return null;
+	
+	// Only validate POST/PUT/PATCH requests with JSON bodies
+	if (!['POST', 'PUT', 'PATCH'].includes(request.method)) return null;
+	
+	const url = new URL(request.url);
+	const path = url.pathname;
+	const method = request.method;
+	
+	// Check if we have a schema for this endpoint
+	const endpointSchemas = config.payloadValidation.schemas[path];
+	if (!endpointSchemas) return null; // No schema defined, skip validation
+	
+	const schema = endpointSchemas[method];
+	if (!schema) return null; // No schema for this method
+	
+	// Check Content-Type
+	const contentType = request.headers.get('Content-Type') || '';
+	if (!contentType.includes('application/json')) {
+		return null; // Only validate JSON payloads
+	}
+	
+	try {
+		// Parse JSON body
+		const clonedRequest = request.clone();
+		const body = await clonedRequest.text();
+		
+		if (!body) {
+			return new Response(
+				JSON.stringify({
+					error: 'Validation Error',
+					message: 'Request body is required',
+				}),
+				{
+					status: 400,
+					headers: { 'Content-Type': 'application/json' },
+				}
+			);
+		}
+		
+		let data;
+		try {
+			data = JSON.parse(body);
+		} catch (e) {
+			return new Response(
+				JSON.stringify({
+					error: 'Validation Error',
+					message: 'Invalid JSON in request body',
+				}),
+				{
+					status: 400,
+					headers: { 'Content-Type': 'application/json' },
+				}
+			);
+		}
+		
+		// Check required fields
+		if (schema.required) {
+			for (const field of schema.required) {
+				if (!(field in data) || data[field] === null || data[field] === undefined) {
+					return new Response(
+						JSON.stringify({
+							error: 'Validation Error',
+							message: `Missing required field: ${field}`,
+							field: field,
+						}),
+						{
+							status: 400,
+							headers: { 'Content-Type': 'application/json' },
+						}
+					);
+				}
+			}
+		}
+		
+		// Validate each property
+		if (schema.properties) {
+			for (const [field, rules] of Object.entries(schema.properties)) {
+				// Skip validation if field is not present and not required
+				if (!(field in data)) continue;
+				
+				const value = data[field];
+				
+				// Type validation
+				if (rules.type) {
+					const actualType = Array.isArray(value) ? 'array' : typeof value;
+					
+					if (rules.type === 'number' && actualType === 'number' && isNaN(value)) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be a valid number`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+					
+					if (rules.type !== actualType) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be of type ${rules.type}, got ${actualType}`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+				}
+				
+				// String validations
+				if (rules.type === 'string' && typeof value === 'string') {
+					// Min length
+					if (rules.minLength !== undefined && value.length < rules.minLength) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be at least ${rules.minLength} characters`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+					
+					// Max length
+					if (rules.maxLength !== undefined && value.length > rules.maxLength) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be at most ${rules.maxLength} characters`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+					
+					// Pattern matching
+					if (rules.pattern && !rules.pattern.test(value)) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' has invalid format`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+					
+					// Enum validation
+					if (rules.enum && !rules.enum.includes(value)) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be one of: ${rules.enum.join(', ')}`,
+								field: field,
+								allowedValues: rules.enum,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+				}
+				
+				// Number validations
+				if (rules.type === 'number' && typeof value === 'number') {
+					// Min value
+					if (rules.min !== undefined && value < rules.min) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be at least ${rules.min}`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+					
+					// Max value
+					if (rules.max !== undefined && value > rules.max) {
+						return new Response(
+							JSON.stringify({
+								error: 'Validation Error',
+								message: `Field '${field}' must be at most ${rules.max}`,
+								field: field,
+							}),
+							{
+								status: 400,
+								headers: { 'Content-Type': 'application/json' },
+							}
+						);
+					}
+				}
+			}
+		}
+		
+		// All validations passed
+		return null;
+		
+	} catch (e) {
+		console.error('Payload validation error:', e);
+		return new Response(
+			JSON.stringify({
+				error: 'Validation Error',
+				message: 'Failed to validate request payload',
+			}),
+			{
+				status: 400,
+				headers: { 'Content-Type': 'application/json' },
+			}
+		);
+	}
+}
+
+/**
  * USER-AGENT VALIDATION
  * 
  * Block suspicious or missing User-Agent headers.
@@ -649,6 +934,10 @@ export default {
 			// 7. Malicious pattern detection (SQL injection, XSS, etc.)
 			const patternCheck = await checkMaliciousPatterns(request);
 			if (patternCheck) return addSecurityHeaders(patternCheck);
+			
+			// 8. Payload validation (API schema validation)
+			const payloadCheck = await checkPayloadValidation(request);
+			if (payloadCheck) return addSecurityHeaders(payloadCheck);
 			
 			// All checks passed - forward to origin or return success
 			const response = await handleOriginRequest(request);
